@@ -102,8 +102,8 @@ Instruction to Agent:
 """
         
         # --- SAVE PROMPT TO FILE FOR DEBUGGING ---
-        with open(out_dir / "latest_llm_payload.txt", "w", encoding="utf-8") as f:
-            f.write(summary.strip())
+        # with open(out_dir / "latest_llm_payload.txt", "w", encoding="utf-8") as f:
+        #     f.write(summary.strip())
         # -----------------------------------------
 
         return summary.strip()
