@@ -16,8 +16,8 @@ def analyze_dataset(file_path: str, output_directory: str = ".", corr_method: st
         corr_method: Method for correlation analysis.
         
     Returns:
-        A structured string detailing specific data quality violations (missing values, 
-        outliers, constant columns) so the LLM can determine the necessary cleaning steps.
+        A complete, token-efficient metadata roster of all columns, plus critical warnings, 
+        allowing the LLM to autonomously decide the best data cleaning strategy.
     """
     path = Path(file_path)
     out_dir = Path(output_directory)
@@ -37,74 +37,74 @@ def analyze_dataset(file_path: str, output_directory: str = ".", corr_method: st
         else:
             return "Error: Unsupported file format."
 
-        # Run analysis and save artifacts for deep-dives
+        # Run analysis and save artifacts
         report = eda.run_full_report(corr_method=corr_method)
         json_path = out_dir / f"{path.stem}_eda_report.json"
         eda.save_json(json_path, corr_method=corr_method)
         
         # ---------------------------------------------------------
-        # ACTIONABLE INTELLIGENCE EXTRACTION FOR THE LLM
+        # THE "COMPLETE PICTURE" EXTRACTION FOR THE LLM
         # ---------------------------------------------------------
         
         overview = report.get("dataset_overview", {})
-        
-        # 1. Extract Missing Values
-        missing_data = report.get("missing_value_report", {}).get("columns", [])
-        missing_str = "\n".join([
-            f"  - '{col['feature']}': {col['missing_pct']}% missing ({col['severity']} severity)"
-            for col in missing_data if col['missing_pct'] > 0
-        ]) or "  - None"
-
-        # 2. Extract Severe Outliers (Only returning Moderate/High/Critical to save tokens)
-        outliers_data = report.get("outlier_summary", {}).get("columns", [])
-        outliers_str = "\n".join([
-            f"  - '{col['feature']}': {col['iqr_outlier_pct']}% IQR outliers ({col['severity']} severity)"
-            for col in outliers_data if col['severity'] in ["Moderate", "High", "Critical"]
-        ]) or "  - None"
-
-        # 3. Extract Constant/Useless Columns
         meta_data = report.get("column_metadata", [])
-        constant_cols = [c['feature'] for c in meta_data if c.get('is_constant', False)]
-        fully_unique_cols = [c['feature'] for c in meta_data if c.get('is_fully_unique', False) and c.get('dtype_kind') in ['O', 'U']] # Likely useless IDs
+        num_summary = report.get("numerical_summary", {})
+        quality = report.get("quality_scorecard", {})
         
-        useless_str = ""
-        if constant_cols: useless_str += f"  - Constant Columns (1 unique value): {', '.join(constant_cols)}\n"
-        if fully_unique_cols: useless_str += f"  - Fully Unique Object/String Columns (likely IDs): {', '.join(fully_unique_cols)}\n"
-        if not useless_str: useless_str = "  - None\n"
+        # 1. COMPLETE COLUMN ROSTER (The macro view for the LLM)
+        roster_lines = []
+        for col in meta_data:
+            c_name = col.get("feature")
+            c_type = col.get("dtype")
+            missing = col.get("missing_pct", 0)
+            
+            # If it's a numeric column, give the LLM the distribution stats
+            if c_name in num_summary and isinstance(num_summary[c_name], dict):
+                stats = num_summary[c_name]
+                skew = round(stats.get("skewness") or 0, 2)
+                outliers = stats.get("iqr_outlier_pct", 0)
+                mean = round(stats.get("mean") or 0, 2)
+                median = round(stats.get("median") or 0, 2)
+                roster_lines.append(f"  - {c_name} [{c_type}]: {missing}% missing | {outliers}% outliers | Skew: {skew} | Mean: {mean}, Median: {median}")
+            else:
+                # If categorical, give the LLM cardinality
+                cardinality = col.get("cardinality", 0)
+                roster_lines.append(f"  - {c_name} [{c_type}]: {missing}% missing | Cardinality: {cardinality} unique values")
+                
+        roster_str = "\n".join(roster_lines)
 
-        # 4. Extract High Correlations (Multicollinearity risk)
+        # 2. SEVERE WARNINGS (To ensure the LLM doesn't miss the biggest traps)
+        useless_cols = [c['feature'] for c in meta_data if c.get('is_constant', False) or (c.get('is_fully_unique', False) and c.get('dtype_kind') in ['O', 'U'])]
+        
         corr_data = report.get("correlation_analysis", {}).get("high_correlation_pairs", [])
-        corr_str = "\n".join([
-            f"  - {pair['feature_a']} & {pair['feature_b']}: {pair['correlation']} correlation"
-            for pair in corr_data
-        ]) or "  - None"
+        corr_str = "\n".join([f"  - {p['feature_a']} & {p['feature_b']}: {p['correlation']} correlation" for p in corr_data]) or "  - None"
 
         # Assemble the final LLM prompt payload
         summary = f"""
 ✅ EDA Complete for '{path.name}'
 Shape: {overview.get('rows')} rows, {overview.get('columns')} columns
 Duplicate Rows: {overview.get('duplicates', {}).get('duplicate_rows')}
+Overall Health Grade: {quality.get('overall_grade')} ({quality.get('overall_score')}/100)
 
-ACTIONABLE DATA QUALITY ISSUES:
+📊 COMPLETE COLUMN ROSTER (Review all data before planning):
+{roster_str}
 
-[1] Missing Values:
-{missing_str}
-
-[2] Outliers (IQR Method):
-{outliers_str}
-
-[3] Low Variance / High Cardinality (Candidates for Dropping):
-{useless_str.strip()}
-
-[4] Multicollinearity (High Correlation Pairs):
+🚨 CRITICAL SYSTEM WARNINGS:
+- High Risk Candidates for Dropping (Constant or Fully Unique): {', '.join(useless_cols) if useless_cols else 'None'}
+- Severe Multicollinearity Detected:
 {corr_str}
 
-Instruction to Agent: Review the issues above. Select and execute the appropriate data cleaning tools (e.g., imputation, dropping columns, handling outliers) before proceeding with analysis. The full detailed JSON report is available locally at: {json_path.absolute()}
+Instruction to Agent: 
+1. Review the Complete Column Roster above to understand the full context of the dataset.
+2. Formulate a comprehensive data cleaning plan. 
+3. Use the distribution stats (skewness, mean vs median) to logically justify your imputation strategies.
+4. Execute the appropriate data cleaning tools.
 """
         return summary.strip()
 
     except Exception as e:
-        return f"An error occurred during analysis: {str(e)}"
+        import traceback
+        return f"An error occurred during analysis: {str(e)}\n\nTraceback:\n{traceback.format_exc()}"
 
 if __name__ == "__main__":
     mcp.run()
