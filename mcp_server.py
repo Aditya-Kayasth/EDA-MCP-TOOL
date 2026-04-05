@@ -81,15 +81,15 @@ def analyze_dataset(file_path: str, output_directory: str = ".", corr_method: st
 
         # Assemble the final LLM prompt payload
         summary = f"""
-✅ EDA Complete for '{path.name}'
+EDA Complete for '{path.name}'
 Shape: {overview.get('rows')} rows, {overview.get('columns')} columns
 Duplicate Rows: {overview.get('duplicates', {}).get('duplicate_rows')}
 Overall Health Grade: {quality.get('overall_grade')} ({quality.get('overall_score')}/100)
 
-📊 COMPLETE COLUMN ROSTER (Review all data before planning):
+COMPLETE COLUMN ROSTER (Review all data before planning):
 {roster_str}
 
-🚨 CRITICAL SYSTEM WARNINGS:
+CRITICAL SYSTEM WARNINGS:
 - High Risk Candidates for Dropping (Constant or Fully Unique): {', '.join(useless_cols) if useless_cols else 'None'}
 - Severe Multicollinearity Detected:
 {corr_str}
@@ -100,6 +100,12 @@ Instruction to Agent:
 3. Use the distribution stats (skewness, mean vs median) to logically justify your imputation strategies.
 4. Execute the appropriate data cleaning tools.
 """
+        
+        # --- SAVE PROMPT TO FILE FOR DEBUGGING ---
+        with open(out_dir / "latest_llm_payload.txt", "w", encoding="utf-8") as f:
+            f.write(summary.strip())
+        # -----------------------------------------
+
         return summary.strip()
 
     except Exception as e:
